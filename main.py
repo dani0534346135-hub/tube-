@@ -4,11 +4,19 @@ from typing import Optional
 import requests
 import os
 import subprocess
+import re
 
 app = FastAPI()
 
 DOWNLOAD_DIR = "audio_files"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+INVIDIOUS_INSTANCES = [
+    "https://invidious.nerdvpn.de",
+    "https://inv.tux.pizza",
+    "https://invidious.drgns.space",
+    "https://vid.puffyan.us"
+]
 
 def clean_query(q: str) -> str:
     if not q:
@@ -22,7 +30,6 @@ def get_video_id_from_youtube(search_term: str) -> Optional[str]:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
-            import re
             matches = re.findall(r"watch\?v=([a-zA-Z0-9_-]{11})", res.text)
             if matches:
                 return matches[0]
@@ -59,28 +66,27 @@ def search_and_play(request: Request, search_query: Optional[str] = Query(None))
             file_url = f"https://my-yt-telephony-api.onrender.com/files/{video_id}.wav"
             return f"playfile={file_url}"
 
-        # 2. חילוץ קישור שמע דרך Cobalt API
-        youtube_url = f"https://www.youtube.com/watch?v={video_id}"
-        cobalt_payload = {
-            "url": youtube_url,
-            "downloadMode": "audio",
-            "audioFormat": "mp3"
-        }
-        cobalt_headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json"
-        }
-
-        cobalt_res = requests.post("https://api.cobalt.tools/", json=cobalt_payload, headers=cobalt_headers, timeout=10)
-        
+        # 2. חילוץ קישור שמע דרך Invidious
         audio_direct_url = None
-        if cobalt_res.status_code == 200:
-            data = cobalt_res.json()
-            if data.get("status") in ["tunnel", "redirect"]:
-                audio_direct_url = data.get("url")
+        for instance in INVIDIOUS_INSTANCES:
+            try:
+                video_data_url = f"{instance}/api/v1/videos/{video_id}"
+                res = requests.get(video_data_url, timeout=5)
+                if res.status_code == 200:
+                    adaptive_formats = res.json().get('adaptiveFormats', [])
+                    for fmt in adaptive_formats:
+                        if fmt.get('type', '').startswith('audio/'):
+                            audio_direct_url = fmt.get('url')
+                            break
+                    if audio_direct_url:
+                        print(f"Audio URL extracted successfully via {instance}")
+                        break
+            except Exception as e:
+                print(f"Invidious extraction error ({instance}): {e}")
+                continue
 
         if not audio_direct_url:
-            print("Cobalt audio extraction failed")
+            print("Invidious audio extraction failed on all instances")
             return "id_list_message=t-שגיאה בחילוץ השמע&go_to_folder=hangup"
 
         # 3. המרה לפורמט WAV טלפוני (8kHz Mono PCM)
