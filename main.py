@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Query
 from fastapi.responses import PlainTextResponse, FileResponse
+from typing import Optional
 import requests
 import os
 import subprocess
@@ -9,7 +10,6 @@ app = FastAPI()
 DOWNLOAD_DIR = "audio_files"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# רשימת שרתי Invidious אמינים למקרה שאחד מהם לא זמין
 INVIDIOUS_INSTANCES = [
     "https://invidious.nerdvpn.de",
     "https://inv.tux.pizza",
@@ -17,15 +17,15 @@ INVIDIOUS_INSTANCES = [
 ]
 
 @app.get("/search_and_play", response_class=PlainTextResponse)
-def search_and_play(search_query: str = Query(...)):
-    # אם התקבל המילה val בטעות, מציגים הודעת שגיאה מובנית
-    if search_query.strip().lower() == "val":
-        return "id_list_message=t-לא הוקש קוד חיפוש תקין"
+def search_and_play(search_query: Optional[str] = Query(None)):
+    # 1. טיפול במצב שבו ימות המשיח פונה ללא פרמטר חיפוש
+    if not search_query or search_query.strip().lower() == "val":
+        return "id_list_message=t-אנא הקש את מספר השיר או קוד החיפוש ולאחריו סולמית"
 
     try:
         video_id = None
         
-        # 1. חיפוש ה-Video ID דרך Invidious API
+        # חיפוש ה-Video ID דרך Invidious
         for instance in INVIDIOUS_INSTANCES:
             try:
                 search_url = f"{instance}/api/v1/search?q={search_query}&type=video"
@@ -43,12 +43,12 @@ def search_and_play(search_query: str = Query(...)):
 
         output_wav = f"{DOWNLOAD_DIR}/{video_id}.wav"
 
-        # אם הקובץ כבר קיים בשרת, מחזירים אותו מיידית
+        # אם הקובץ כבר מומר וקיים בשרת
         if os.path.exists(output_wav):
             file_url = f"https://my-yt-telephony-api.onrender.com/files/{video_id}.wav"
             return f"id_list_message=t-נמצא הקטע המבוקש&playfile={file_url}"
 
-        # 2. קבלת לינק ישיר להורדת השמע דרך Invidious
+        # חילוץ הלינק הישיר לשמע
         audio_url = None
         for instance in INVIDIOUS_INSTANCES:
             try:
@@ -68,7 +68,7 @@ def search_and_play(search_query: str = Query(...)):
         if not audio_url:
             return "id_list_message=t-שגיאה בחילוץ השמע"
 
-        # 3. המרת השמע באמצעות FFmpeg ישירות מה-URL ל-WAV
+        # המרה לפורמט WAV טלפוני (8kHz Mono)
         ffmpeg_cmd = [
             'ffmpeg', '-y',
             '-i', audio_url,
@@ -84,7 +84,7 @@ def search_and_play(search_query: str = Query(...)):
 
     except Exception as e:
         print(f"Error: {e}")
-        return "id_list_message=t-תרחשה שגיאה בעיבוד הקטע"
+        return "id_list_message=t-התרחשה שגיאה בעיבוד הקטע"
 
 @app.get("/files/{file_name}")
 def get_file(file_name: str):
