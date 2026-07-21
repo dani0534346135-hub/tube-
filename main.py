@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import PlainTextResponse, FileResponse
 from typing import Optional
-import yt_dlp
+import requests
 import os
 import subprocess
 
@@ -15,9 +15,23 @@ def clean_query(q: str) -> str:
         return ""
     return q.replace("*", "").replace("#", "").strip()
 
+def get_video_id_from_youtube(search_term: str) -> Optional[str]:
+    """חיפוש מזהה הסרטון מיוטיוב"""
+    try:
+        url = f"https://www.youtube.com/results?search_query={search_term}"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            import re
+            matches = re.findall(r"watch\?v=([a-zA-Z0-9_-]{11})", res.text)
+            if matches:
+                return matches[0]
+    except Exception as e:
+        print(f"Search extraction error: {e}")
+    return None
+
 @app.get("/search_and_play", response_class=PlainTextResponse)
 def search_and_play(request: Request, search_query: Optional[str] = Query(None)):
-    print(f"--- Incoming Request URL: {request.url} ---")
     print(f"--- Received search_query: '{search_query}' ---")
 
     if not search_query or search_query.strip().lower() in ["val", "none", ""]:
@@ -30,61 +44,55 @@ def search_and_play(request: Request, search_query: Optional[str] = Query(None))
         return "read=t-הקש קוד חיפוש תקין ולאחריו סולמית=search_query,1,20,5,Y,readdigits,*,no"
 
     try:
-        # הגדרות yt-dlp לחיפוש והורדת שמע בלבד
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'default_search': 'ytsearch1:',
-            'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
-            'noplaylist': True,
-            'quiet': True,
-            'no_warnings': True,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['mweb', 'android']
-                }
-            }
-        }
-
-        video_id = None
-        downloaded_file = None
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(search_term, download=True)
-            if 'entries' in info and len(info['entries']) > 0:
-                video_info = info['entries'][0]
-            else:
-                video_info = info
-            
-            video_id = video_info.get('id')
-            downloaded_file = ydl.prepare_filename(video_info)
-
-        if not video_id or not downloaded_file:
-            print("No video found via yt-dlp")
+        # 1. מציאת מזהה הסרטון
+        video_id = get_video_id_from_youtube(search_term)
+        
+        if not video_id:
+            print("No video ID found")
             return "id_list_message=t-לא נמצאו תוצאות לחיפוש&go_to_folder=hangup"
 
+        print(f"Found Video ID: {video_id}")
         output_wav = f"{DOWNLOAD_DIR}/{video_id}.wav"
 
-        # אם קובץ ה-WAV המומר כבר קיים בשרת
+        # אם הקובץ כבר קיים בשרת
         if os.path.exists(output_wav):
-            if os.path.exists(downloaded_file) and downloaded_file != output_wav:
-                os.remove(downloaded_file)
             file_url = f"https://my-yt-telephony-api.onrender.com/files/{video_id}.wav"
             return f"playfile={file_url}"
 
-        # המרה ל-WAV בפורמט טלפוני (8kHz Mono PCM)
+        # 2. חילוץ קישור שמע דרך Cobalt API
+        youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+        cobalt_payload = {
+            "url": youtube_url,
+            "downloadMode": "audio",
+            "audioFormat": "mp3"
+        }
+        cobalt_headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+
+        cobalt_res = requests.post("https://api.cobalt.tools/", json=cobalt_payload, headers=cobalt_headers, timeout=10)
+        
+        audio_direct_url = None
+        if cobalt_res.status_code == 200:
+            data = cobalt_res.json()
+            if data.get("status") in ["tunnel", "redirect"]:
+                audio_direct_url = data.get("url")
+
+        if not audio_direct_url:
+            print("Cobalt audio extraction failed")
+            return "id_list_message=t-שגיאה בחילוץ השמע&go_to_folder=hangup"
+
+        # 3. המרה לפורמט WAV טלפוני (8kHz Mono PCM)
         ffmpeg_cmd = [
             'ffmpeg', '-y',
-            '-i', downloaded_file,
+            '-i', audio_direct_url,
             '-ar', '8000',
             '-ac', '1',
             '-acodec', 'pcm_s16le',
             output_wav
         ]
         subprocess.run(ffmpeg_cmd, check=True)
-
-        # מחיקת קובץ המקור הבלתי מומרי
-        if os.path.exists(downloaded_file) and downloaded_file != output_wav:
-            os.remove(downloaded_file)
 
         file_url = f"https://my-yt-telephony-api.onrender.com/files/{video_id}.wav"
         return f"playfile={file_url}"
