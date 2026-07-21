@@ -16,12 +16,26 @@ INVIDIOUS_INSTANCES = [
     "https://invidious.drgns.space"
 ]
 
+def clean_query(q: str) -> str:
+    """מנקה כוכביות ותווים מיוחדים מהקשת המקשים"""
+    if not q:
+        return ""
+    # הסרת כוכביות וסולמיות
+    cleaned = q.replace("*", "").replace("#", "").strip()
+    return cleaned
+
 @app.get("/search_and_play", response_class=PlainTextResponse)
 def search_and_play(search_query: Optional[str] = Query(None)):
-    # 1. אם לא התקבל קלט, מורים לימות המשיח לבקש קלט מהמשתמש
+    # 1. אם לא התקבל קלט, מבקשים קלט מהמשתמש
     if not search_query or search_query.strip().lower() in ["val", "none", ""]:
-        # מחזיר פקודת read מובנית לימות המשיח
-        return "read=t-אנא הקש את מספר השיר או קוד החיפוש ולאחריו סולמית=search_query,1,10,5,Y,NUMBER,*,no"
+        # readdigits משמיע למשתמש את המקשים שהקיש
+        return "read=t-אנא הקש את קוד החיפוש ולאחריו סולמית=search_query,1,20,5,Y,NUMBER,*,no"
+
+    # ניקוי המחרוזת מתווים כמו כוכביות
+    search_term = clean_query(search_query)
+
+    if not search_term:
+        return "read=t-הקש קוד חיפוש תקין ולאחריו סולמית=search_query,1,20,5,Y,NUMBER,*,no"
 
     try:
         video_id = None
@@ -29,7 +43,7 @@ def search_and_play(search_query: Optional[str] = Query(None)):
         # חיפוש ה-Video ID דרך Invidious
         for instance in INVIDIOUS_INSTANCES:
             try:
-                search_url = f"{instance}/api/v1/search?q={search_query}&type=video"
+                search_url = f"{instance}/api/v1/search?q={search_term}&type=video"
                 res = requests.get(search_url, timeout=5)
                 if res.status_code == 200:
                     data = res.json()
@@ -44,7 +58,7 @@ def search_and_play(search_query: Optional[str] = Query(None)):
 
         output_wav = f"{DOWNLOAD_DIR}/{video_id}.wav"
 
-        # אם הקובץ כבר מומר וקיים בשרת
+        # אם הקובץ כבר קיים בשרת
         if os.path.exists(output_wav):
             file_url = f"https://my-yt-telephony-api.onrender.com/files/{video_id}.wav"
             return f"playfile={file_url}"
