@@ -18,9 +18,10 @@ INVIDIOUS_INSTANCES = [
 
 @app.get("/search_and_play", response_class=PlainTextResponse)
 def search_and_play(search_query: Optional[str] = Query(None)):
-    # 1. טיפול במצב שבו ימות המשיח פונה ללא פרמטר חיפוש
-    if not search_query or search_query.strip().lower() == "val":
-        return "id_list_message=t-אנא הקש את מספר השיר או קוד החיפוש ולאחריו סולמית"
+    # 1. אם לא התקבל קלט, מורים לימות המשיח לבקש קלט מהמשתמש
+    if not search_query or search_query.strip().lower() in ["val", "none", ""]:
+        # מחזיר פקודת read מובנית לימות המשיח
+        return "read=t-אנא הקש את מספר השיר או קוד החיפוש ולאחריו סולמית=search_query,1,10,5,Y,NUMBER,*,no"
 
     try:
         video_id = None
@@ -39,14 +40,14 @@ def search_and_play(search_query: Optional[str] = Query(None)):
                 continue
 
         if not video_id:
-            return "id_list_message=t-לא נמצאו תוצאות לחיפוש"
+            return "id_list_message=t-לא נמצאו תוצאות לחיפוש&go_to_folder=hangup"
 
         output_wav = f"{DOWNLOAD_DIR}/{video_id}.wav"
 
         # אם הקובץ כבר מומר וקיים בשרת
         if os.path.exists(output_wav):
             file_url = f"https://my-yt-telephony-api.onrender.com/files/{video_id}.wav"
-            return f"id_list_message=t-נמצא הקטע המבוקש&playfile={file_url}"
+            return f"playfile={file_url}"
 
         # חילוץ הלינק הישיר לשמע
         audio_url = None
@@ -66,7 +67,7 @@ def search_and_play(search_query: Optional[str] = Query(None)):
                 continue
 
         if not audio_url:
-            return "id_list_message=t-שגיאה בחילוץ השמע"
+            return "id_list_message=t-שגיאה בחילוץ השמע&go_to_folder=hangup"
 
         # המרה לפורמט WAV טלפוני (8kHz Mono)
         ffmpeg_cmd = [
@@ -80,11 +81,11 @@ def search_and_play(search_query: Optional[str] = Query(None)):
         subprocess.run(ffmpeg_cmd, check=True)
 
         file_url = f"https://my-yt-telephony-api.onrender.com/files/{video_id}.wav"
-        return f"id_list_message=t-נמצא הקטע המבוקש&playfile={file_url}"
+        return f"playfile={file_url}"
 
     except Exception as e:
         print(f"Error: {e}")
-        return "id_list_message=t-התרחשה שגיאה בעיבוד הקטע"
+        return "id_list_message=t-התרחשה שגיאה בעיבוד הקטע&go_to_folder=hangup"
 
 @app.get("/files/{file_name}")
 def get_file(file_name: str):
