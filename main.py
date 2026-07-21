@@ -1,7 +1,6 @@
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import PlainTextResponse, FileResponse
 from typing import Optional
-from pytubefix import YouTube
 import requests
 import os
 import subprocess
@@ -12,10 +11,12 @@ app = FastAPI()
 DOWNLOAD_DIR = "audio_files"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-INVIDIOUS_INSTANCES = [
-    "https://inv.tux.pizza",
-    "https://invidious.nerdvpn.de",
-    "https://invidious.drgns.space"
+# רשימת שרתי Piped ו-Invidious אמינים ומעודכנים
+PIPED_INSTANCES = [
+    "https://pipedapi.kavin.rocks",
+    "https://api.piped.privacydev.net",
+    "https://pipedapi.tokhmi.xyz",
+    "https://piped-api.garudalinux.org"
 ]
 
 def clean_query(q: str) -> str:
@@ -64,34 +65,20 @@ def search_and_play(request: Request, search_query: Optional[str] = Query(None))
 
         audio_direct_url = None
 
-        # 1. ניסיון חילוץ דרך pytubefix בלקוחות שונים
-        for client_name in ['ANDROID_MUSIC', 'WEB', 'IOS']:
+        # חילוץ דרך Piped API (עוקף חסימות בוטים)
+        for instance in PIPED_INSTANCES:
             try:
-                yt = YouTube(f"https://www.youtube.com/watch?v={video_id}", client=client_name)
-                audio_stream = yt.streams.filter(only_audio=True).first()
-                if audio_stream:
-                    audio_direct_url = audio_stream.url
-                    print(f"Audio URL extracted via pytubefix ({client_name})")
-                    break
+                res = requests.get(f"{instance}/streams/{video_id}", timeout=5)
+                if res.status_code == 200:
+                    data = res.json()
+                    audio_streams = data.get("audioStreams", [])
+                    if audio_streams:
+                        # לוקחים את איכות השמע הטובה ביותר
+                        audio_direct_url = audio_streams[0].get("url")
+                        print(f"Audio extracted via Piped ({instance})")
+                        break
             except Exception as e:
-                print(f"pytubefix error ({client_name}): {e}")
-
-        # 2. גיבוי דרך Invidious אם pytubefix נכשל
-        if not audio_direct_url:
-            for instance in INVIDIOUS_INSTANCES:
-                try:
-                    res = requests.get(f"{instance}/api/v1/videos/{video_id}", timeout=4)
-                    if res.status_code == 200:
-                        adaptive_formats = res.json().get('adaptiveFormats', [])
-                        for fmt in adaptive_formats:
-                            if fmt.get('type', '').startswith('audio/'):
-                                audio_direct_url = fmt.get('url')
-                                break
-                        if audio_direct_url:
-                            print(f"Audio URL extracted via Invidious ({instance})")
-                            break
-                except Exception as e:
-                    print(f"Invidious backup error ({instance}): {e}")
+                print(f"Piped extraction error ({instance}): {e}")
 
         if not audio_direct_url:
             print("Audio extraction failed on all attempts")
