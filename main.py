@@ -1,32 +1,42 @@
 from fastapi import FastAPI, Query
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, FileResponse
 import yt_dlp
 import os
 import subprocess
 
 app = FastAPI()
 
-# תיקייה זמנית לשמירת הקבצים המומרים
 DOWNLOAD_DIR = "audio_files"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 @app.get("/search_and_play", response_class=PlainTextResponse)
 def search_and_play(search_query: str = Query(...)):
     try:
-        # 1. הגדרת yt-dlp לחיפוש והורדת השמע בלבד
+        # הגדרות לעקיפת חסימת בוטים בשרתי ענן
         ydl_opts = {
             'format': 'bestaudio/best',
-            'default_search': 'ytsearch1:',  # מחפש ומחזיר את התוצאה הראשונה
+            'default_search': 'ytsearch1:',
             'outtmpl': f'{DOWNLOAD_DIR}/temp.%(ext)s',
             'noplaylist': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'ios']
+                }
+            },
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(search_query, download=True)
-            video_id = info['entries'][0]['id']
-            downloaded_file = ydl.prepare_filename(info['entries'][0])
+            if 'entries' in info and len(info['entries']) > 0:
+                video_info = info['entries'][0]
+            else:
+                video_info = info
+                
+            video_id = video_info['id']
+            downloaded_file = ydl.prepare_filename(video_info)
 
-        # 2. המרת הקובץ לפורמט טלפוני מותאם לימות המשיח (WAV 8kHz Mono)
+        # המרת הקובץ לפורמט WAV המותאם לטלפוניה (8kHz Mono)
         output_wav = f"{DOWNLOAD_DIR}/{video_id}.wav"
         ffmpeg_cmd = [
             'ffmpeg', '-y',
@@ -38,14 +48,22 @@ def search_and_play(search_query: str = Query(...)):
         ]
         subprocess.run(ffmpeg_cmd, check=True)
         
-        # מחיקת הקובץ המקורי שנשמר בלתי מומרי
+        # מחיקת הקובץ המקורי
         if os.path.exists(downloaded_file):
             os.remove(downloaded_file)
 
-        # 3. החזרת פקודת השמעה בפורמט של ימות המשיח
-        # יש להחליף את YOUR_SERVER_URL בכתובת השרת שיקודם ב-Render
-        file_url = f"https://YOUR_SERVER_URL/files/{video_id}.wav"
+        # החזרת הפקודה להשמעה במערכת ימות המשיח
+        file_url = f"https://my-yt-telephony-api.onrender.com/files/{video_id}.wav"
         return f"id_list_message=t-נמצא הקטע המבוקש&playfile={file_url}"
 
     except Exception as e:
+        print(f"Error: {e}")
         return "id_list_message=t-תרחשה שגיאה בחיפוש הקטע"
+
+# נתיב להורדת קובץ השמע המורד והמומר
+@app.get("/files/{file_name}")
+def get_file(file_name: str):
+    file_path = os.path.join(DOWNLOAD_DIR, file_name)
+    if os.path.exists(file_path):
+        return FileResponse(file_path, media_type="audio/wav")
+    return PlainTextResponse("File not found", status_code=404)
