@@ -5,6 +5,7 @@ import os
 import subprocess
 import re
 import requests
+import yt_dlp
 
 app = FastAPI()
 
@@ -60,17 +61,23 @@ def search_and_play(request: Request, search_query: Optional[str] = Query(None))
         youtube_url = f"https://www.youtube.com/watch?v={video_id}"
         temp_audio = f"{DOWNLOAD_DIR}/temp_{video_id}.m4a"
 
-        # הורדת האודיו באמצעות yt-dlp בלקוח android_vr / ios המוקף חסימות בוטים
-        ytdlp_cmd = [
-            'yt-dlp',
-            '-f', 'ba/b',
-            '--extractor-args', 'youtube:player_client=android_vr,ios,mweb',
-            '-o', temp_audio,
-            youtube_url
-        ]
+        # הגדרות yt-dlp בתוך מודול הפייתון
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': temp_audio,
+            'noplaylist': True,
+            'quiet': True,
+            'no_warnings': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android_vr', 'ios', 'mweb']
+                }
+            }
+        }
 
-        print("Executing yt-dlp download...")
-        subprocess.run(ytdlp_cmd, check=True, timeout=30)
+        print("Downloading audio via yt_dlp module...")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([youtube_url])
 
         # המרה ל-WAV טלפוני (8kHz Mono PCM)
         ffmpeg_cmd = [
@@ -90,9 +97,6 @@ def search_and_play(request: Request, search_query: Optional[str] = Query(None))
         file_url = f"https://my-yt-telephony-api.onrender.com/files/{video_id}.wav"
         return f"playfile={file_url}"
 
-    except subprocess.TimeoutExpired:
-        print("Download timed out")
-        return "id_list_message=t-הורדת הקטע לקחה יותר מדי זמן&go_to_folder=hangup"
     except Exception as e:
         print(f"General processing error: {e}")
         return "id_list_message=t-התרחשה שגיאה בעיבוד הקטע&go_to_folder=hangup"
