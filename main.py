@@ -1,16 +1,23 @@
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import PlainTextResponse, FileResponse
 from typing import Optional
+import requests
 import os
 import subprocess
 import re
-import requests
-import yt_dlp
 
 app = FastAPI()
 
 DOWNLOAD_DIR = "audio_files"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+# שרתי Invidious מעודכנים לחילוץ הקישור הישיר
+INVIDIOUS_NODES = [
+    "https://invidious.nerdvpn.de",
+    "https://inv.tux.pizza",
+    "https://invidious.drgns.space",
+    "https://vid.puffyan.us"
+]
 
 def clean_query(q: str) -> str:
     if not q:
@@ -21,7 +28,7 @@ def get_video_id_from_youtube(search_term: str) -> Optional[str]:
     """מציאת מזהה הסרטון מיוטיוב"""
     try:
         url = f"https://www.youtube.com/results?search_query={search_term}"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             matches = re.findall(r"watch\?v=([a-zA-Z0-9_-]{11})", res.text)
@@ -58,41 +65,42 @@ def search_and_play(request: Request, search_query: Optional[str] = Query(None))
             file_url = f"https://my-yt-telephony-api.onrender.com/files/{video_id}.wav"
             return f"playfile={file_url}"
 
-        youtube_url = f"https://www.youtube.com/watch?v={video_id}"
-        temp_audio = f"{DOWNLOAD_DIR}/temp_{video_id}.m4a"
+        audio_stream_url = None
 
-        # הגדרות yt-dlp בתוך מודול הפייתון
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': temp_audio,
-            'noplaylist': True,
-            'quiet': True,
-            'no_warnings': True,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android_vr', 'ios', 'mweb']
-                }
-            }
-        }
+        # חילוץ הלינק הישיר לשמע משרתי Invidious
+        for node in INVIDIOUS_NODES:
+            try:
+                api_url = f"{node}/api/v1/videos/{video_id}"
+                res = requests.get(api_url, timeout=5)
+                if res.status_code == 200:
+                    data = res.json()
+                    adaptive_formats = data.get("adaptiveFormats", [])
+                    for fmt in adaptive_formats:
+                        if fmt.get("type", "").startswith("audio/"):
+                            audio_stream_url = fmt.get("url")
+                            break
+                    if audio_stream_url:
+                        print(f"Successfully extracted stream URL via {node}")
+                        break
+            except Exception as e:
+                print(f"Node error ({node}): {e}")
+                continue
 
-        print("Downloading audio via yt_dlp module...")
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([youtube_url])
+        if not audio_stream_url:
+            print("Failed to get audio stream URL from all nodes")
+            return "id_list_message=t-שגיאה בחילוץ השמע&go_to_folder=hangup"
 
-        # המרה ל-WAV טלפוני (8kHz Mono PCM)
+        # המרה ישירה ל-WAV טלפוני (8kHz Mono PCM) דרך ffmpeg מתוך ה-Stream
         ffmpeg_cmd = [
             'ffmpeg', '-y',
-            '-i', temp_audio,
+            '-i', audio_stream_url,
             '-ar', '8000',
             '-ac', '1',
             '-acodec', 'pcm_s16le',
             output_wav
         ]
-        subprocess.run(ffmpeg_cmd, check=True)
-
-        # מחיקת קובץ הזמני
-        if os.path.exists(temp_audio):
-            os.remove(temp_audio)
+        print("Executing ffmpeg stream conversion...")
+        subprocess.run(ffmpeg_cmd, check=True, timeout=60)
 
         file_url = f"https://my-yt-telephony-api.onrender.com/files/{video_id}.wav"
         return f"playfile={file_url}"
