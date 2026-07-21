@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import PlainTextResponse, FileResponse
 from typing import Optional
+from pytubefix import YouTube
 import requests
 import os
 import subprocess
@@ -10,13 +11,6 @@ app = FastAPI()
 
 DOWNLOAD_DIR = "audio_files"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
-INVIDIOUS_INSTANCES = [
-    "https://invidious.nerdvpn.de",
-    "https://inv.tux.pizza",
-    "https://invidious.drgns.space",
-    "https://vid.puffyan.us"
-]
 
 def clean_query(q: str) -> str:
     if not q:
@@ -66,27 +60,19 @@ def search_and_play(request: Request, search_query: Optional[str] = Query(None))
             file_url = f"https://my-yt-telephony-api.onrender.com/files/{video_id}.wav"
             return f"playfile={file_url}"
 
-        # 2. חילוץ קישור שמע דרך Invidious
+        # 2. חילוץ קישור שמע דרך pytubefix
         audio_direct_url = None
-        for instance in INVIDIOUS_INSTANCES:
-            try:
-                video_data_url = f"{instance}/api/v1/videos/{video_id}"
-                res = requests.get(video_data_url, timeout=5)
-                if res.status_code == 200:
-                    adaptive_formats = res.json().get('adaptiveFormats', [])
-                    for fmt in adaptive_formats:
-                        if fmt.get('type', '').startswith('audio/'):
-                            audio_direct_url = fmt.get('url')
-                            break
-                    if audio_direct_url:
-                        print(f"Audio URL extracted successfully via {instance}")
-                        break
-            except Exception as e:
-                print(f"Invidious extraction error ({instance}): {e}")
-                continue
+        try:
+            yt = YouTube(f"https://www.youtube.com/watch?v={video_id}", client='ANDROID_MUSIC')
+            audio_stream = yt.streams.filter(only_audio=True).first()
+            if audio_stream:
+                audio_direct_url = audio_stream.url
+                print("Audio URL extracted successfully via pytubefix")
+        except Exception as e:
+            print(f"pytubefix extraction error: {e}")
 
         if not audio_direct_url:
-            print("Invidious audio extraction failed on all instances")
+            print("Audio extraction failed")
             return "id_list_message=t-שגיאה בחילוץ השמע&go_to_folder=hangup"
 
         # 3. המרה לפורמט WAV טלפוני (8kHz Mono PCM)
