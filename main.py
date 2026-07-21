@@ -11,12 +11,13 @@ app = FastAPI()
 DOWNLOAD_DIR = "audio_files"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# רשימת שרתי Piped ו-Invidious אמינים ומעודכנים
-PIPED_INSTANCES = [
-    "https://pipedapi.kavin.rocks",
-    "https://api.piped.privacydev.net",
-    "https://pipedapi.tokhmi.xyz",
-    "https://piped-api.garudalinux.org"
+# רשימת שרתי Piped ו-Invidious פעילים ומעודכנים
+STREAM_INSTANCES = [
+    {"type": "piped", "url": "https://pipedapi.kavin.rocks"},
+    {"type": "piped", "url": "https://pipedapi.col2.miraheze.org"},
+    {"type": "piped", "url": "https://api.piped.yt"},
+    {"type": "invidious", "url": "https://inv.tux.pizza"},
+    {"type": "invidious", "url": "https://invidious.nerdvpn.de"}
 ]
 
 def clean_query(q: str) -> str:
@@ -65,20 +66,33 @@ def search_and_play(request: Request, search_query: Optional[str] = Query(None))
 
         audio_direct_url = None
 
-        # חילוץ דרך Piped API (עוקף חסימות בוטים)
-        for instance in PIPED_INSTANCES:
+        # חילוץ דרך השרתים המעודכנים
+        for instance in STREAM_INSTANCES:
+            inst_type = instance["type"]
+            inst_url = instance["url"]
+            
             try:
-                res = requests.get(f"{instance}/streams/{video_id}", timeout=5)
-                if res.status_code == 200:
-                    data = res.json()
-                    audio_streams = data.get("audioStreams", [])
-                    if audio_streams:
-                        # לוקחים את איכות השמע הטובה ביותר
-                        audio_direct_url = audio_streams[0].get("url")
-                        print(f"Audio extracted via Piped ({instance})")
-                        break
+                if inst_type == "piped":
+                    res = requests.get(f"{inst_url}/streams/{video_id}", timeout=4)
+                    if res.status_code == 200:
+                        audio_streams = res.json().get("audioStreams", [])
+                        if audio_streams:
+                            audio_direct_url = audio_streams[0].get("url")
+                            print(f"Audio extracted via Piped ({inst_url})")
+                            break
+                elif inst_type == "invidious":
+                    res = requests.get(f"{inst_url}/api/v1/videos/{video_id}", timeout=4)
+                    if res.status_code == 200:
+                        adaptive_formats = res.json().get('adaptiveFormats', [])
+                        for fmt in adaptive_formats:
+                            if fmt.get('type', '').startswith('audio/'):
+                                audio_direct_url = fmt.get('url')
+                                break
+                        if audio_direct_url:
+                            print(f"Audio extracted via Invidious ({inst_url})")
+                            break
             except Exception as e:
-                print(f"Piped extraction error ({instance}): {e}")
+                print(f"Extraction error ({inst_url}): {e}")
 
         if not audio_direct_url:
             print("Audio extraction failed on all attempts")
