@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import PlainTextResponse, FileResponse
 from typing import Optional
+from youtubesearchpython import VideosSearch
 import requests
 import os
 import subprocess
@@ -13,24 +14,21 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 INVIDIOUS_INSTANCES = [
     "https://invidious.nerdvpn.de",
     "https://inv.tux.pizza",
-    "https://invidious.drgns.space"
+    "https://invidious.drgns.space",
+    "https://vid.puffyan.us"
 ]
 
 def clean_query(q: str) -> str:
     if not q:
         return ""
-    # ניקוי תווים מיוחדים
     return q.replace("*", "").replace("#", "").strip()
 
 @app.get("/search_and_play", response_class=PlainTextResponse)
 def search_and_play(request: Request, search_query: Optional[str] = Query(None)):
-    # הדפסת ה-URL המלא שנרשם בלוגים של Render לבדיקה
     print(f"--- Incoming Request URL: {request.url} ---")
     print(f"--- Received search_query: '{search_query}' ---")
 
-    # אם לא התקבל קלט או שהתקבל ערך ריק
     if not search_query or search_query.strip().lower() in ["val", "none", ""]:
-        # readdigits משמיע למאזין את הספרות שהוא מקיש
         return "read=t-אנא הקש את קוד החיפוש ולאחריו סולמית=search_query,1,20,5,Y,readdigits,*,no"
 
     search_term = clean_query(search_query)
@@ -42,21 +40,31 @@ def search_and_play(request: Request, search_query: Optional[str] = Query(None))
     try:
         video_id = None
         
-        # חיפוש ה-Video ID
-        for instance in INVIDIOUS_INSTANCES:
-            try:
-                search_url = f"{instance}/api/v1/search?q={search_term}&type=video"
-                print(f"Searching at: {search_url}")
-                res = requests.get(search_url, timeout=5)
-                if res.status_code == 200:
-                    data = res.json()
-                    if data and len(data) > 0:
-                        video_id = data[0]['videoId']
-                        print(f"Found Video ID: {video_id}")
-                        break
-            except Exception as e:
-                print(f"Invidious search error ({instance}): {e}")
-                continue
+        # 1. חיפוש יציב באמצעות youtube-search-python
+        try:
+            videos_search = VideosSearch(search_term, limit=1)
+            results = videos_search.result()
+            if results and 'result' in results and len(results['result']) > 0:
+                video_id = results['result'][0]['id']
+                print(f"Found Video ID via youtube-search-python: {video_id}")
+        except Exception as e:
+            print(f"youtube-search-python error: {e}")
+
+        # 2. גיבוי דרך Invidious אם החיפוש הראשון נכשל
+        if not video_id:
+            for instance in INVIDIOUS_INSTANCES:
+                try:
+                    search_url = f"{instance}/api/v1/search?q={search_term}&type=video"
+                    res = requests.get(search_url, timeout=4)
+                    if res.status_code == 200:
+                        data = res.json()
+                        if data and len(data) > 0:
+                            video_id = data[0]['videoId']
+                            print(f"Found Video ID via Invidious ({instance}): {video_id}")
+                            break
+                except Exception as e:
+                    print(f"Invidious error ({instance}): {e}")
+                    continue
 
         if not video_id:
             print("No video ID found for this query.")
@@ -64,17 +72,17 @@ def search_and_play(request: Request, search_query: Optional[str] = Query(None))
 
         output_wav = f"{DOWNLOAD_DIR}/{video_id}.wav"
 
-        # אם הקובץ כבר קיים
+        # אם הקובץ כבר קיים בשרת
         if os.path.exists(output_wav):
             file_url = f"https://my-yt-telephony-api.onrender.com/files/{video_id}.wav"
             return f"playfile={file_url}"
 
-        # חילוץ כתובת השמע
+        # 3. חילוץ כתובת השמע
         audio_url = None
         for instance in INVIDIOUS_INSTANCES:
             try:
                 video_data_url = f"{instance}/api/v1/videos/{video_id}"
-                res = requests.get(video_data_url, timeout=5)
+                res = requests.get(video_data_url, timeout=4)
                 if res.status_code == 200:
                     adaptive_formats = res.json().get('adaptiveFormats', [])
                     for fmt in adaptive_formats:
@@ -83,8 +91,7 @@ def search_and_play(request: Request, search_query: Optional[str] = Query(None))
                             break
                     if audio_url:
                         break
-            except Exception as e:
-                print(f"Invidious video data error ({instance}): {e}")
+            except Exception:
                 continue
 
         if not audio_url:
