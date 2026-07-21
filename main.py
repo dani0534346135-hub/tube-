@@ -1,24 +1,15 @@
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import PlainTextResponse, FileResponse
 from typing import Optional
-import requests
 import os
 import subprocess
 import re
+import requests
 
 app = FastAPI()
 
 DOWNLOAD_DIR = "audio_files"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
-# רשימת שרתי Piped ו-Invidious פעילים ומעודכנים
-STREAM_INSTANCES = [
-    {"type": "piped", "url": "https://pipedapi.kavin.rocks"},
-    {"type": "piped", "url": "https://pipedapi.col2.miraheze.org"},
-    {"type": "piped", "url": "https://api.piped.yt"},
-    {"type": "invidious", "url": "https://inv.tux.pizza"},
-    {"type": "invidious", "url": "https://invidious.nerdvpn.de"}
-]
 
 def clean_query(q: str) -> str:
     if not q:
@@ -26,16 +17,17 @@ def clean_query(q: str) -> str:
     return q.replace("*", "").replace("#", "").strip()
 
 def get_video_id_from_youtube(search_term: str) -> Optional[str]:
+    """מציאת מזהה הסרטון מיוטיוב"""
     try:
         url = f"https://www.youtube.com/results?search_query={search_term}"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             matches = re.findall(r"watch\?v=([a-zA-Z0-9_-]{11})", res.text)
             if matches:
                 return matches[0]
     except Exception as e:
-        print(f"Search extraction error: {e}")
+        print(f"Search error: {e}")
     return None
 
 @app.get("/search_and_play", response_class=PlainTextResponse)
@@ -60,47 +52,30 @@ def search_and_play(request: Request, search_query: Optional[str] = Query(None))
         print(f"Found Video ID: {video_id}")
         output_wav = f"{DOWNLOAD_DIR}/{video_id}.wav"
 
+        # אם הקובץ כבר קיים בשרת
         if os.path.exists(output_wav):
             file_url = f"https://my-yt-telephony-api.onrender.com/files/{video_id}.wav"
             return f"playfile={file_url}"
 
-        audio_direct_url = None
+        youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+        temp_audio = f"{DOWNLOAD_DIR}/temp_{video_id}.m4a"
 
-        # חילוץ דרך השרתים המעודכנים
-        for instance in STREAM_INSTANCES:
-            inst_type = instance["type"]
-            inst_url = instance["url"]
-            
-            try:
-                if inst_type == "piped":
-                    res = requests.get(f"{inst_url}/streams/{video_id}", timeout=4)
-                    if res.status_code == 200:
-                        audio_streams = res.json().get("audioStreams", [])
-                        if audio_streams:
-                            audio_direct_url = audio_streams[0].get("url")
-                            print(f"Audio extracted via Piped ({inst_url})")
-                            break
-                elif inst_type == "invidious":
-                    res = requests.get(f"{inst_url}/api/v1/videos/{video_id}", timeout=4)
-                    if res.status_code == 200:
-                        adaptive_formats = res.json().get('adaptiveFormats', [])
-                        for fmt in adaptive_formats:
-                            if fmt.get('type', '').startswith('audio/'):
-                                audio_direct_url = fmt.get('url')
-                                break
-                        if audio_direct_url:
-                            print(f"Audio extracted via Invidious ({inst_url})")
-                            break
-            except Exception as e:
-                print(f"Extraction error ({inst_url}): {e}")
+        # הורדת האודיו באמצעות yt-dlp בלקוח android_vr / ios המוקף חסימות בוטים
+        ytdlp_cmd = [
+            'yt-dlp',
+            '-f', 'ba/b',
+            '--extractor-args', 'youtube:player_client=android_vr,ios,mweb',
+            '-o', temp_audio,
+            youtube_url
+        ]
 
-        if not audio_direct_url:
-            print("Audio extraction failed on all attempts")
-            return "id_list_message=t-שגיאה בחילוץ השמע&go_to_folder=hangup"
+        print("Executing yt-dlp download...")
+        subprocess.run(ytdlp_cmd, check=True, timeout=30)
 
+        # המרה ל-WAV טלפוני (8kHz Mono PCM)
         ffmpeg_cmd = [
             'ffmpeg', '-y',
-            '-i', audio_direct_url,
+            '-i', temp_audio,
             '-ar', '8000',
             '-ac', '1',
             '-acodec', 'pcm_s16le',
@@ -108,9 +83,16 @@ def search_and_play(request: Request, search_query: Optional[str] = Query(None))
         ]
         subprocess.run(ffmpeg_cmd, check=True)
 
+        # מחיקת קובץ הזמני
+        if os.path.exists(temp_audio):
+            os.remove(temp_audio)
+
         file_url = f"https://my-yt-telephony-api.onrender.com/files/{video_id}.wav"
         return f"playfile={file_url}"
 
+    except subprocess.TimeoutExpired:
+        print("Download timed out")
+        return "id_list_message=t-הורדת הקטע לקחה יותר מדי זמן&go_to_folder=hangup"
     except Exception as e:
         print(f"General processing error: {e}")
         return "id_list_message=t-התרחשה שגיאה בעיבוד הקטע&go_to_folder=hangup"
